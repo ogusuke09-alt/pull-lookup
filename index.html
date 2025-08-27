@@ -61,367 +61,136 @@
 
   <!-- Engine (local file in the same folder as this HTML) -->
   <script src="tesseract.min.js"></script>
-  <script>
-  /* =========================================================
-     LDU-focused OCR helpers (PREPROCESS + TUNED SETTINGS)
-     ========================================================= */
+<script>
+let data=[], worker=null;
 
-  // Preprocess: upscale → grayscale/contrast → threshold → light dilation
-  function preprocessForLDU(imgOrCanvas) {
-    const getW = x => x.width || x.videoWidth || x.naturalWidth;
-    const getH = x => x.height || x.videoHeight || x.naturalHeight;
-    const w = getW(imgOrCanvas), h = getH(imgOrCanvas);
+// ========== INIT OCR ==========
+async function initOCR(){
+  try {
+    document.getElementById('err').textContent="";
+    document.getElementById('ocrState').textContent="Loading Tesseract…";
 
-    const base = document.createElement('canvas');
-    base.width = w; base.height = h;
-    base.getContext('2d', { willReadFrequently:true }).drawImage(imgOrCanvas, 0, 0, w, h);
+    worker = await Tesseract.createWorker("eng", 1, {
+      workerPath: "worker.min.js",
+      corePath: "core/"   // folder containing tesseract-core.wasm.js
+    });
 
-    const out = document.createElement('canvas');
-    // upscale: 2x → you can try 3x if print is faint
-    out.width = Math.max(1, Math.round(w * 2));
-    out.height = Math.max(1, Math.round(h * 2));
-    const ctx = out.getContext('2d', { willReadFrequently:true });
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(base, 0, 0, out.width, out.height);
-
-    // grayscale + mild contrast
-    let img = ctx.getImageData(0,0,out.width,out.height);
-    let d = img.data;
-    for (let i=0;i<d.length;i+=4){
-      let y = 0.2126*d[i] + 0.7152*d[i+1] + 0.0722*d[i+2];
-      y = (y - 128) * 1.35 + 128; // tweak 1.2–1.6 if needed
-      y = y < 0 ? 0 : y > 255 ? 255 : y;
-      d[i]=d[i+1]=d[i+2]=y;
-    }
-    ctx.putImageData(img,0,0);
-
-    // binarize (threshold)
-    img = ctx.getImageData(0,0,out.width,out.height);
-    d = img.data;
-    const T = 140; // try 130–150 depending on photos
-    for (let i=0;i<d.length;i+=4){
-      const v = d[i] < T ? 0 : 255;
-      d[i]=d[i+1]=d[i+2]=v;
-    }
-    ctx.putImageData(img,0,0);
-
-    // light dilation (3x3)
-    const pad = ctx.getImageData(0,0,out.width,out.height);
-    const p = pad.data;
-    for (let y=1;y<out.height-1;y++){
-      for (let x=1;x<out.width-1;x++){
-        let black=false;
-        for (let dy=-1; dy<=1 && !black; dy++){
-          const row=(y+dy)*out.width;
-          for (let dx=-1; dx<=1; dx++){
-            if (p[(row + (x+dx))*4] === 0) { black = true; break; }
-          }
-        }
-        const i4=(y*out.width + x)*4;
-        const v = black ? 0 : 255;
-        p[i4]=p[i4+1]=p[i4+2]=v;
-      }
-    }
-    ctx.putImageData(pad,0,0);
-
-    return out;
+    document.getElementById('ocrState').innerHTML = "<span class='ok'>OCR ready ✅</span>";
+  } catch(e){
+    document.getElementById('err').textContent = "Init failed: "+e.message;
+    document.getElementById('ocrState').textContent="Error ❌";
   }
+}
+document.getElementById('btnInit').addEventListener('click', initOCR);
 
-  // Tesseract config focused on single 3-char code
-  const OCR_OPTS = {
-    tessedit_pageseg_mode: '8', // SINGLE_WORD (try 7 for line, 6 for block)
-    tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
-    user_defined_dpi: '300',
-    preserve_interword_spaces: '1'
+// ========== CSV LOAD ==========
+document.getElementById('csvFile').addEventListener('change', e=>{
+  const f=e.target.files[0]; if(!f) return;
+  const r=new FileReader();
+  r.onload=ev=>{
+    const lines = ev.target.result.split(/\r?\n/);
+    const headers = lines[0].split(",");
+    const depot = headers.indexOf("Depot");
+    const route = headers.indexOf("Route");
+    const street= headers.indexOf("Street");
+    const range = headers.indexOf("Address Range");
+    const ldu   = headers.indexOf("LDU");
+    const pull  = headers.indexOf("Pull #");
+    data = lines.slice(1).map(row=>{
+      const c=row.split(",");
+      return {Depot:c[depot], Route:c[route], Street:c[street], Range:c[range], LDU:(c[ldu]||"").trim().toUpperCase(), Pull:c[pull]};
+    }).filter(x=>x.Depot && x.LDU && x.Pull);
+    document.getElementById('status').textContent="CSV loaded ("+data.length+" rows)";
   };
+  r.readAsText(f);
+});
+document.getElementById('btnSample').addEventListener('click', ()=>{
+  data=[{Depot:"Whiterock",Route:"LC0008",Street:"16 Ave",Range:"1500-1598",LDU:"1C2",Pull:"7"}];
+  document.getElementById('status').textContent="Sample loaded. Try LDU 1C2.";
+});
 
-  function normalizeLDU(txt) {
-    if (!txt) return '';
-    let t = txt.replace(/[^A-Za-z0-9]/g,'').toUpperCase();
-    const swaps = { '0':'O','1':'I','5':'S','2':'Z','8':'B' };
-    t = t.split('').map(ch => swaps[ch] ?? ch).join('');
-    if (t.length >= 3) {
-      let a=t[0], b=t[1], c=t[2];
-      if (!/[A-Z]/.test(a)) a='O';
-      if (!/[0-9]/.test(b)) b='1';
-      if (!/[A-Z]/.test(c)) c='O';
-      return (a+b+c).slice(0,3);
+// ========== SEARCH ==========
+document.getElementById('btnSearch').addEventListener('click', ()=>{
+  const ldu=document.getElementById('ldu').value.trim().toUpperCase();
+  const hit=data.find(r=>r.LDU===ldu);
+  if(hit){ showResult(hit); } 
+  else { document.getElementById('result').style.display="block"; document.getElementById('result').textContent="No match."; }
+});
+function showResult(r){
+  const box=document.getElementById('result'); box.style.display="block";
+  box.innerHTML=`${r.Route} • ${r.Street} ${r.Range||''}<br>LDU ${r.LDU}<br><strong>Pull # ${r.Pull}</strong>`;
+}
+
+// ========== OCR HELPERS ==========
+function rotateCanvas(src, deg){
+  const c=document.createElement("canvas"), ctx=c.getContext("2d");
+  if(deg%180){ c.width=src.height; c.height=src.width; }
+  else { c.width=src.width; c.height=src.height; }
+  ctx.translate(c.width/2,c.height/2);
+  ctx.rotate(deg*Math.PI/180);
+  ctx.drawImage(src,-src.width/2,-src.height/2);
+  return c;
+}
+function preprocessWithThreshold(imgOrCanvas, scale=2, contrast=1.35, threshold=140){
+  const c=document.createElement("canvas"), ctx=c.getContext("2d");
+  c.width=imgOrCanvas.width*scale; c.height=imgOrCanvas.height*scale;
+  ctx.drawImage(imgOrCanvas,0,0,c.width,c.height);
+  const id=ctx.getImageData(0,0,c.width,c.height);
+  const d=id.data;
+  for(let i=0;i<d.length;i+=4){
+    let v=0.299*d[i]+0.587*d[i+1]+0.114*d[i+2];
+    v=(v-128)*contrast+128;
+    const b=(v>=threshold)?255:0;
+    d[i]=d[i+1]=d[i+2]=b;
+  }
+  ctx.putImageData(id,0,0);
+  return c;
+}
+function preprocessForLDU(imgOrCanvas){
+  return preprocessWithThreshold(imgOrCanvas,2,1.35,140);
+}
+const FULL_PC_RE=/[ABCEGHJKLMNPRSTVXY]\d[ABCEGHJKLMNPRSTVWXYZ][ -]?\d[ABCEGHJKLMNPRSTVWXYZ]\d/;
+
+async function runLDUOCR(imgOrCanvas, worker){
+  let tried=[];
+  for(const deg of [0,90,180,270]){
+    const rot=rotateCanvas(imgOrCanvas,deg);
+    const pre=preprocessForLDU(rot);
+    const {data:{text}}=await worker.recognize(pre);
+    const t=text.toUpperCase();
+    tried.push(t);
+    const m=t.match(FULL_PC_RE);
+    if(m) return m[0].replace(/\s/g,"").slice(-3);
+  }
+  console.log("Tried OCR texts:",tried);
+  return null;
+}
+
+// ========== OCR IMAGE ==========
+async function recognizeFile(file){
+  if(!worker){ document.getElementById('err').textContent="Init OCR first"; return; }
+  const img=new Image(); 
+  img.onload=async()=>{
+    const ldu=await runLDUOCR(img, worker);
+    if(!ldu){
+      document.getElementById('err').textContent="No postal code found";
+      return;
     }
-    return t;
-  }
-
-  async function runLDUOCR(imgOrCanvas, worker) {
-    const pre = preprocessForLDU(imgOrCanvas);
-    const { data } = await worker.recognize(pre, { lang:'eng', config: OCR_OPTS });
-    return normalizeLDU(data.text);
-  }
-
-  /* =========================================================
-     App state / globals
-     ========================================================= */
-  let data = [], worker = null;
-
-  // Crop editor globals
-  const editBlock = document.getElementById('editBlock');
-  const canvas = document.getElementById('preview');
-  const ctx = canvas.getContext('2d', { willReadFrequently:true });
-  let imgBitmap = null;
-  let crop = { x:0, y:0, w:0, h:0, active:false };
-  let previewScale = 1;   // NEW: preview→original scale
-
-  function setErr(msg){ document.getElementById('err').textContent = msg || ""; }
-
-  /* =========================================================
-     INIT OCR
-     ========================================================= */
-  async function initOCR(){
-    try {
-      setErr("");
-      document.getElementById('ocrState').textContent="Loading Tesseract…";
-      document.getElementById('btnInit').disabled = true;
-
-      worker = await Tesseract.createWorker("eng", 1, {
-        workerPath: "worker.min.js",
-        corePath: "core/"   // folder with 4 core files
-      });
-
-      await worker.setParameters({
-        tessedit_pageseg_mode: 8,
-        tessedit_char_whitelist: 'ABCEGHJKLMNPRSTVWXYZ0123456789',
-        preserve_interword_spaces: '1',
-        user_defined_dpi: '300'
-      });
-
-      document.getElementById('ocrState').innerHTML = "<span class='ok'>OCR ready ✅</span>";
-    } catch(e){
-      setErr("Init failed: "+(e?.message||e));
-      document.getElementById('ocrState').textContent="Error ❌";
-    } finally {
-      document.getElementById('btnInit').disabled = false;
-    }
-  }
-  document.getElementById('btnInit').addEventListener('click', initOCR);
-
-  /* =========================================================
-     CSV LOAD
-     ========================================================= */
-  document.getElementById('csvFile').addEventListener('change', e=>{
-    const f=e.target.files[0]; if(!f) return;
-    const r=new FileReader();
-    r.onload=ev=>{
-      const lines = ev.target.result.split(/\r?\n/);
-      if (!lines.length) { setErr("CSV seems empty"); return; }
-      const headers = lines[0].split(",");
-      const depot = headers.indexOf("Depot");
-      const route = headers.indexOf("Route");
-      const street= headers.indexOf("Street");
-      const range = headers.indexOf("Address Range");
-      const ldu   = headers.indexOf("LDU");
-      const pull  = headers.indexOf("Pull #");
-      data = lines.slice(1).map(row=>{
-        if (!row.trim()) return null;
-        const c=row.split(",");
-        return {Depot:c[depot], Route:c[route], Street:c[street], Range:c[range], LDU:(c[ldu]||"").trim().toUpperCase(), Pull:c[pull]};
-      }).filter(Boolean).filter(x=>x.Depot && x.LDU && x.Pull);
-      document.getElementById('status').textContent="CSV loaded ("+data.length+" rows)";
-      setErr("");
-    };
-    r.readAsText(f);
-  });
-  document.getElementById('btnSample').addEventListener('click', ()=>{
-    data=[{Depot:"Whiterock",Route:"LC0008",Street:"16 Ave",Range:"1500-1598",LDU:"1C2",Pull:"7"}];
-    document.getElementById('status').textContent="Sample loaded. Try LDU 1C2.";
-  });
-
-  /* =========================================================
-     SEARCH
-     ========================================================= */
-  document.getElementById('btnSearch').addEventListener('click', ()=>{
-    const ldu=document.getElementById('ldu').value.trim().toUpperCase();
-    const hit=data.find(r=>r.LDU===ldu);
-    const box=document.getElementById('result'); box.style.display="block";
-    box.innerHTML = hit
-      ? `${hit.Route} • ${hit.Street} ${hit.Range||''}<br>LDU ${hit.LDU}<br><strong>Pull # ${hit.Pull}</strong>`
-      : "No match.";
-  });
-
-  /* =========================================================
-     SIMPLE CROP EDITOR
-     ========================================================= */
-  function openEditorFromFile(file){
-    const url = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = async () => {
-      try {
-        // Prefer createImageBitmap if available (faster); fallback to Image → canvas snapshot
-        if (window.createImageBitmap) {
-          imgBitmap = await createImageBitmap(img);
-        } else {
-          const tmp = document.createElement('canvas');
-          tmp.width = img.naturalWidth; tmp.height = img.naturalHeight;
-          tmp.getContext('2d').drawImage(img, 0, 0);
-          imgBitmap = tmp; // canvas acts like a bitmap source
-        }
-        fitCanvas();
-        drawPreview();
-        editBlock.style.display='block';
-      } finally {
-        URL.revokeObjectURL(url);
-      }
-    };
-    img.onerror = () => { URL.revokeObjectURL(url); setErr("Could not load image."); };
-    img.src = url;
-  }
-
-  function fitCanvas(){
-    if(!imgBitmap) return;
-    const maxW = Math.min(900, Math.floor(window.innerWidth * 0.95));
-    const maxH = Math.min(1200, Math.floor(window.innerHeight * 0.55)); // keep visible on phones
-    previewScale = Math.min(1, Math.min(maxW / (imgBitmap.width || imgBitmap.naturalWidth || imgBitmap.videoWidth),
-                                        maxH / (imgBitmap.height || imgBitmap.naturalHeight || imgBitmap.videoHeight)));
-    const srcW = (imgBitmap.width  || imgBitmap.naturalWidth  || imgBitmap.videoWidth);
-    const srcH = (imgBitmap.height || imgBitmap.naturalHeight || imgBitmap.videoHeight);
-    canvas.width  = Math.max(1, Math.round(srcW * previewScale));
-    canvas.height = Math.max(1, Math.round(srcH * previewScale));
-    crop = { x:0, y:0, w:0, h:0, active:false };
-  }
-
-  function drawPreview(){
-    if(!imgBitmap) return;
-    const srcW = (imgBitmap.width  || imgBitmap.naturalWidth  || imgBitmap.videoWidth);
-    const srcH = (imgBitmap.height || imgBitmap.naturalHeight || imgBitmap.videoHeight);
-    ctx.clearRect(0,0,canvas.width,canvas.height);
-    ctx.drawImage(imgBitmap, 0, 0, srcW, srcH, 0, 0, canvas.width, canvas.height);
-
-    if (crop.w && crop.h){
-      ctx.save();
-      ctx.fillStyle = "rgba(0,0,0,0.45)";
-      ctx.fillRect(0,0,canvas.width,canvas.height);
-      const rx = Math.min(crop.x, crop.x+crop.w);
-      const ry = Math.min(crop.y, crop.y+crop.h);
-      const rw = Math.abs(crop.w);
-      const rh = Math.abs(crop.h);
-      ctx.clearRect(rx, ry, rw, rh);
-      ctx.restore();
-      ctx.strokeStyle = "#2f81f7";
-      ctx.lineWidth = 2;
-      ctx.strokeRect(rx, ry, rw, rh);
-    }
-  }
-
-  function getPoint(ev){
-    const r = canvas.getBoundingClientRect();
-    const src = ev.touches ? ev.touches[0] : ev;
-    const x = src.clientX - r.left;
-    const y = src.clientY - r.top;
-    return { x: Math.max(0, Math.min(canvas.width, x)),
-             y: Math.max(0, Math.min(canvas.height, y)) };
-  }
-
-  canvas.addEventListener('mousedown', e=>{ crop.active=true; const p=getPoint(e); crop.x=p.x; crop.y=p.y; crop.w=0; crop.h=0; drawPreview(); });
-  canvas.addEventListener('mousemove', e=>{ if(!crop.active) return; const p=getPoint(e); crop.w=p.x-crop.x; crop.h=p.y-crop.y; drawPreview(); });
-  canvas.addEventListener('mouseup',   ()=>{ crop.active=false; });
-  canvas.addEventListener('mouseleave',()=>{ crop.active=false; });
-
-  canvas.addEventListener('touchstart', e=>{ crop.active=true; const p=getPoint(e); crop.x=p.x; crop.y=p.y; crop.w=0; crop.h=0; drawPreview(); }, {passive:false});
-  canvas.addEventListener('touchmove',  e=>{ if(!crop.active) return; const p=getPoint(e); crop.w=p.x-crop.x; crop.h=p.y-crop.y; drawPreview(); }, {passive:false});
-  canvas.addEventListener('touchend',   ()=>{ crop.active=false; }, {passive:false});
-
-  window.addEventListener('resize', ()=>{ if(imgBitmap){ fitCanvas(); drawPreview(); } });
-
-  document.getElementById('btnResetCrop').addEventListener('click', ()=>{
-    crop = { x:0, y:0, w:0, h:0, active:false };
-    drawPreview();
-  });
-
-  // Crop → ORIGINAL pixels (not preview) and OCR
-  document.getElementById('btnOCRCrop').addEventListener('click', async ()=>{
-    if(!worker){ setErr("Init OCR first"); return; }
-    if(!imgBitmap){ setErr("Choose an image first"); return; }
-
-    const srcW = (imgBitmap.width  || imgBitmap.naturalWidth  || imgBitmap.videoWidth);
-    const srcH = (imgBitmap.height || imgBitmap.naturalHeight || imgBitmap.videoHeight);
-
-    const srcCanvas = document.createElement('canvas');
-    const sctx = srcCanvas.getContext('2d', { willReadFrequently:true });
-
-    if (crop.w && crop.h){
-      const px = Math.min(crop.x, crop.x + crop.w);
-      const py = Math.min(crop.y, crop.y + crop.h);
-      const pw = Math.abs(crop.w);
-      const ph = Math.abs(crop.h);
-
-      const sx = Math.max(0, Math.round(px / previewScale));
-      const sy = Math.max(0, Math.round(py / previewScale));
-      const sw = Math.max(1, Math.round(pw / previewScale));
-      const sh = Math.max(1, Math.round(ph / previewScale));
-
-      srcCanvas.width = sw; srcCanvas.height = sh;
-      sctx.drawImage(imgBitmap, sx, sy, sw, sh, 0, 0, sw, sh);
-    } else {
-      // No crop: use whole original, but cap for speed
-      const MAX_DIM = 2200;
-      const scale = Math.min(1, MAX_DIM / Math.max(srcW, srcH));
-      const tw = Math.max(1, Math.round(srcW * scale));
-      const th = Math.max(1, Math.round(srcH * scale));
-      srcCanvas.width = tw; srcCanvas.height = th;
-      sctx.imageSmoothingEnabled = true;
-      sctx.imageSmoothingQuality = 'high';
-      sctx.drawImage(imgBitmap, 0, 0, srcW, srcH, 0, 0, tw, th);
-    }
-
-    try {
-      const ldu = await runLDUOCR(srcCanvas, worker);
-      if(!ldu || ldu.length<3){
-        setErr("No postal code found. Try tighter crop / better light / higher contrast.");
-        return;
-      }
-      document.getElementById('ldu').value = ldu;
-      document.getElementById('status').textContent = "OCR detected LDU: " + ldu;
-      setErr("");
-    } catch(e){
-      setErr("OCR failed: " + (e?.message||e));
-    }
-  });
-
-  /* =========================================================
-     IMAGE PICKERS (iPhone-safe)
-     ========================================================= */
-  function makeFileInput({accept, capture, onpick}) {
-    const i = document.createElement('input');
-    i.type = 'file';
-    if (accept)  i.accept = accept;
-    if (capture) i.capture = capture; // 'environment' for rear camera
-    i.style.display = 'none';
-    i.addEventListener('change', ev => {
-      const f = ev.target.files && ev.target.files[0];
-      if (f) onpick(f);
-      // cleanup
-      i.remove();
-    });
-    document.body.appendChild(i);   // IMPORTANT: in DOM before click
-    i.click();                      // user gesture handler calls this
-  }
-
-  function recognizeFile(file){
-    openEditorFromFile(file); // open editor; user can crop then run OCR
-  }
-
-  document.getElementById('btnImage').addEventListener('click', ()=>{
-    makeFileInput({
-      accept: 'image/*',
-      onpick: file => recognizeFile(file)
-    });
-  });
-
-  document.getElementById('btnCamera').addEventListener('click', ()=>{
-    makeFileInput({
-      accept: 'image/*',
-      capture: 'environment',
-      onpick: file => recognizeFile(file)
-    });
-  });
-  </script>
+    document.getElementById('ldu').value=ldu;
+    document.getElementById('status').textContent="OCR detected LDU: "+ldu;
+  };
+  img.src=URL.createObjectURL(file);
+}
+document.getElementById('btnImage').addEventListener('click', ()=>{
+  const i=document.createElement('input'); i.type='file'; i.accept='image/*';
+  i.onchange=e=>{ if(e.target.files[0]) recognizeFile(e.target.files[0]); };
+  i.click();
+});
+document.getElementById('btnCamera').addEventListener('click', ()=>{
+  const i=document.createElement('input'); i.type='file'; i.accept='image/*'; i.capture='environment';
+  i.onchange=e=>{ if(e.target.files[0]) recognizeFile(e.target.files[0]); };
+  i.click();
+});
+</script>
 </body>
 </html>
