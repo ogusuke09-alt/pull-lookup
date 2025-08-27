@@ -165,6 +165,10 @@ async function runLDUOCR(imgOrCanvas, worker) {
 
 let data=[], worker=null;
 
+let imgBitmap = null;
+let crop = { x:0, y:0, w:0, h:0, active:false };
+let previewScale = 1;   // <— NEW: preview-to-original scale
+
 // ========== INIT OCR ==========
 async function initOCR(){
   try {
@@ -231,32 +235,19 @@ function showResult(r){
 }
 
 /* ========== SIMPLE CROP EDITOR ========== */
-const editBlock = document.getElementById('editBlock');
-const canvas = document.getElementById('preview');
-const ctx = canvas.getContext('2d', { willReadFrequently:true });
-let imgBitmap = null;
-let crop = { x:0, y:0, w:0, h:0, active:false };
-
-function openEditorFromFile(file){
-  const url = URL.createObjectURL(file);
-  const img = new Image();
-  img.onload = async () => {
-    imgBitmap = await createImageBitmap(img);
-    fitCanvas();
-    drawPreview();
-    editBlock.style.display='block';
-    URL.revokeObjectURL(url);
-  };
-  img.onerror = () => { URL.revokeObjectURL(url); document.getElementById('err').textContent="Could not load image."; };
-  img.src = url;
-}
-
 function fitCanvas(){
   if(!imgBitmap) return;
-  const maxW = Math.min(900, Math.floor(window.innerWidth*0.95));
-  const scale = Math.min(1, maxW / imgBitmap.width);
-  canvas.width  = Math.max(1, Math.round(imgBitmap.width  * scale));
-  canvas.height = Math.max(1, Math.round(imgBitmap.height * scale));
+
+  const maxW = Math.min(900, Math.floor(window.innerWidth * 0.95));
+  const maxH = Math.min(1200, Math.floor(window.innerHeight * 0.55)); // keep it visible on phones
+
+  // Compute and store preview → original scale so we can map the crop back
+  previewScale = Math.min(1, Math.min(maxW / imgBitmap.width, maxH / imgBitmap.height));
+
+  canvas.width  = Math.max(1, Math.round(imgBitmap.width  * previewScale));
+  canvas.height = Math.max(1, Math.round(imgBitmap.height * previewScale));
+
+  // reset crop box
   crop = { x:0, y:0, w:0, h:0, active:false };
 }
 
@@ -339,16 +330,55 @@ function recognizeFile(file){
   openEditorFromFile(file);
 }
 
-document.getElementById('btnImage').addEventListener('click', ()=>{
-  const i=document.createElement('input'); i.type='file'; i.accept='image/*';
-  i.onchange=e=>{ if(e.target.files[0]) recognizeFile(e.target.files[0]); };
-  i.click();
-});
+document.getElementById('btnOCRCrop').addEventListener('click', async ()=>{
+  if(!worker){ document.getElementById('err').textContent="Init OCR first"; return; }
+  if(!imgBitmap){ document.getElementById('err').textContent="Choose an image first"; return; }
 
-document.getElementById('btnCamera').addEventListener('click', ()=>{
-  const i=document.createElement('input'); i.type='file'; i.accept='image/*'; i.capture='environment';
-  i.onchange=e=>{ if(e.target.files[0]) recognizeFile(e.target.files[0]); };
-  i.click();
+  // Build a high-res source canvas from the ORIGINAL bitmap
+  const srcCanvas = document.createElement('canvas');
+  const sctx = srcCanvas.getContext('2d', { willReadFrequently:true });
+
+  if (crop.w && crop.h){
+    // Map preview crop → original pixel coordinates
+    const px = Math.min(crop.x, crop.x + crop.w);
+    const py = Math.min(crop.y, crop.y + crop.h);
+    const pw = Math.abs(crop.w);
+    const ph = Math.abs(crop.h);
+
+    const sx = Math.max(0, Math.round(px / previewScale));
+    const sy = Math.max(0, Math.round(py / previewScale));
+    const sw = Math.max(1, Math.round(pw / previewScale));
+    const sh = Math.max(1, Math.round(ph / previewScale));
+
+    srcCanvas.width = sw; 
+    srcCanvas.height = sh;
+    sctx.drawImage(imgBitmap, sx, sy, sw, sh, 0, 0, sw, sh);
+  } else {
+    // No crop: take the whole original, but cap to a reasonable max size for speed
+    const MAX_DIM = 2200; // tweak if needed
+    const scale = Math.min(1, MAX_DIM / Math.max(imgBitmap.width, imgBitmap.height));
+    const tw = Math.max(1, Math.round(imgBitmap.width  * scale));
+    const th = Math.max(1, Math.round(imgBitmap.height * scale));
+
+    srcCanvas.width = tw; 
+    srcCanvas.height = th;
+    sctx.imageSmoothingEnabled = true;
+    sctx.imageSmoothingQuality = 'high';
+    sctx.drawImage(imgBitmap, 0, 0, tw, th);
+  }
+
+  try {
+    const ldu = await runLDUOCR(srcCanvas, worker);
+    if(!ldu || ldu.length<3){
+      document.getElementById('err').textContent = "No postal code found. Try a tighter crop / better light.";
+      return;
+    }
+    document.getElementById('ldu').value = ldu;
+    document.getElementById('status').textContent = "OCR detected LDU: " + ldu;
+    document.getElementById('err').textContent = "";
+  } catch(e){
+    document.getElementById('err').textContent = "OCR failed: " + e.message;
+  }
 });
 </script>
 </body>
