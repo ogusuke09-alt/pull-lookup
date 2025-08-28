@@ -8,6 +8,7 @@
     body { font-family: -apple-system, sans-serif; background:#0d1117; color:#eee; text-align:center; padding:20px; }
     input, button { margin:6px; padding:8px; font-size:16px; }
     button { background:#007bff; color:#fff; border:none; border-radius:6px; }
+    canvas { max-width:100%; margin-top:10px; border:1px solid #555; }
     .ok { color:#8ef59a; font-weight:bold; }
     .err { color:#ff7b7b; font-size:14px; margin-top:6px; }
     .result { margin-top:20px; font-size:18px; border:1px solid #333; padding:12px; border-radius:8px; }
@@ -34,38 +35,40 @@
   <button id="btnCamera">Scan with Camera</button>
   <button id="btnImage">Choose Image</button>
 
+  <p>Tip: rotate to make the postal code horizontal, draw a crop box around it, then run OCR.</p>
+  <canvas id="preview" width="400" height="300"></canvas><br>
+  <button id="btnRotateL">⟲ Rotate 90° Left</button>
+  <button id="btnRotateR">⟳ Rotate 90° Right</button><br>
+  <button id="btnRunOCR">Run OCR on Crop</button>
+  <button id="btnResetCrop">Reset Crop</button>
+
   <div id="result" class="result" style="display:none"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script>
 let data=[], worker=null;
+let img=null, preview=document.getElementById("preview"), ctx=preview.getContext("2d");
+let crop={x:0,y:0,w:0,h:0}, drawing=false, rotation=0;
 
 /* ========= OCR Init (safe for iPhone & GitHub Pages) ========= */
 const CDN_CHOICES = [
   "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js",
   "https://unpkg.com/tesseract.js@5/dist/tesseract.min.js"
 ];
-
 async function pickCdn() {
   for (let url of CDN_CHOICES) {
-    try {
-      await fetch(url, { method:"HEAD", mode:"no-cors" });
-      return url;
-    } catch(e) { continue; }
+    try { await fetch(url, { method:"HEAD", mode:"no-cors" }); return url; }
+    catch(e) { continue; }
   }
   throw new Error("No CDN reachable");
 }
-
 async function initOCR(){
   try {
     document.getElementById('err').textContent="";
     document.getElementById('ocrState').textContent="Loading Tesseract…";
-
     const cdn = await pickCdn();
     console.log("Using OCR from:", cdn);
-
     worker = await Tesseract.createWorker("eng", 1);
-
     document.getElementById('ocrState').innerHTML = "<span class='ok'>OCR ready ✅</span>";
   } catch(e){
     document.getElementById('err').textContent = "Init failed: "+e.message;
@@ -112,28 +115,77 @@ function showResult(r){
   box.innerHTML=`${r.Route} • ${r.Street} ${r.Range||''}<br>LDU ${r.LDU}<br><strong>Pull # ${r.Pull}</strong>`;
 }
 
-/* ========= OCR IMAGE ========= */
-async function recognizeFile(file){
-  if(!worker){ document.getElementById('err').textContent="Init OCR first"; return; }
-  const img=new Image(); img.onload=async()=>{
-    const ret=await worker.recognize(img);
-    const text=(ret.data.text||"").toUpperCase();
-    const m=text.match(/[ABCEGHJKLMNPRSTVXY]\d[ABCEGHJKLMNPRSTVWXYZ]\s?\d[ABCEGHJKLMNPRSTVWXYZ]\d/);
-    if(!m){ document.getElementById('err').textContent="No postal code found"; return; }
-    const ldu=m[0].replace(/\s/g,"").slice(-3);
-    document.getElementById('ldu').value=ldu;
-    document.getElementById('status').textContent="OCR detected LDU: "+ldu;
-  };
+/* ========= IMAGE PREVIEW & CROP ========= */
+function fitCanvas(){
+  if(!img) return;
+  preview.width = img.width;
+  preview.height = img.height;
+  ctx.save();
+  ctx.clearRect(0,0,preview.width,preview.height);
+  if(rotation!==0){
+    ctx.translate(preview.width/2, preview.height/2);
+    ctx.rotate(rotation*Math.PI/180);
+    ctx.drawImage(img,-img.width/2,-img.height/2);
+  } else {
+    ctx.drawImage(img,0,0);
+  }
+  ctx.restore();
+  if(crop.w>0 && crop.h>0){
+    ctx.strokeStyle="cyan"; ctx.lineWidth=2;
+    ctx.strokeRect(crop.x,crop.y,crop.w,crop.h);
+  }
+}
+function loadImage(file){
+  img=new Image();
+  img.onload=()=>{ rotation=0; crop={x:0,y:0,w:0,h:0}; fitCanvas(); };
   img.src=URL.createObjectURL(file);
 }
+preview.addEventListener("mousedown",e=>{
+  drawing=true; const rect=preview.getBoundingClientRect();
+  crop.x=e.clientX-rect.left; crop.y=e.clientY-rect.top; crop.w=0; crop.h=0;
+});
+preview.addEventListener("mousemove",e=>{
+  if(!drawing) return; const rect=preview.getBoundingClientRect();
+  crop.w=(e.clientX-rect.left)-crop.x;
+  crop.h=(e.clientY-rect.top)-crop.y;
+  fitCanvas();
+});
+preview.addEventListener("mouseup",()=>{ drawing=false; });
+document.getElementById("btnRotateL").addEventListener("click",()=>{rotation=(rotation-90)%360;fitCanvas();});
+document.getElementById("btnRotateR").addEventListener("click",()=>{rotation=(rotation+90)%360;fitCanvas();});
+document.getElementById("btnResetCrop").addEventListener("click",()=>{crop={x:0,y:0,w:0,h:0};fitCanvas();});
+
+/* ========= OCR ON CROP ========= */
+async function runLduOCR(){
+  if(!worker){ document.getElementById('err').textContent="Init OCR first"; return; }
+  if(!img){ document.getElementById('err').textContent="No image loaded"; return; }
+
+  const tmp=document.createElement("canvas"), tctx=tmp.getContext("2d");
+  let sx=crop.x, sy=crop.y, sw=crop.w, sh=crop.h;
+  if(sw<=0||sh<=0){ sx=0; sy=0; sw=img.width; sh=img.height; }
+  tmp.width=Math.abs(sw); tmp.height=Math.abs(sh);
+  tctx.drawImage(preview,sx,sy,sw,sh,0,0,Math.abs(sw),Math.abs(sh));
+
+  const ret=await worker.recognize(tmp);
+  const text=(ret.data.text||"").toUpperCase();
+  console.log("OCR raw:", text);
+  const m=text.match(/[ABCEGHJKLMNPRSTVXY]\d[ABCEGHJKLMNPRSTVWXYZ]\s?\d[ABCEGHJKLMNPRSTVWXYZ]\d/);
+  if(!m){ document.getElementById('err').textContent="No postal code found"; return; }
+  const ldu=m[0].replace(/\s/g,"").slice(-3);
+  document.getElementById('ldu').value=ldu;
+  document.getElementById('status').textContent="OCR detected LDU: "+ldu;
+}
+document.getElementById("btnRunOCR").addEventListener("click", runLduOCR);
+
+/* ========= FILE PICKERS ========= */
 document.getElementById('btnImage').addEventListener('click', ()=>{
   const i=document.createElement('input'); i.type='file'; i.accept='image/*';
-  i.onchange=e=>{ if(e.target.files[0]) recognizeFile(e.target.files[0]); };
+  i.onchange=e=>{ if(e.target.files[0]) loadImage(e.target.files[0]); };
   i.click();
 });
 document.getElementById('btnCamera').addEventListener('click', ()=>{
   const i=document.createElement('input'); i.type='file'; i.accept='image/*'; i.capture='environment';
-  i.onchange=e=>{ if(e.target.files[0]) recognizeFile(e.target.files[0]); };
+  i.onchange=e=>{ if(e.target.files[0]) loadImage(e.target.files[0]); };
   i.click();
 });
 </script>
