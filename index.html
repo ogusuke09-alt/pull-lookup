@@ -21,7 +21,7 @@
   </style>
 </head>
 <body>
-  <h2>Pull # Lookup — OCR App (Full-Res Crop)</h2>
+  <h2>Pull # Lookup — OCR App (Full-Res Crop + Rotate)</h2>
 
   <p><strong>Step 1:</strong> Load OCR engine.</p>
   <button id="btnInit">Init OCR</button>
@@ -47,10 +47,14 @@
     <button id="btnImage">Choose Image</button>
   </div>
 
-  <!-- Simple editor with crop -->
+  <!-- Crop editor -->
   <div id="editBlock">
     <p class="hint">Drag on the image to draw a crop box around the postal code, then tap “Run OCR on Crop”.</p>
     <canvas id="preview" width="0" height="0"></canvas><br>
+    <div class="row">
+      <button id="btnRotateLeft">⟲ Rotate 90° Left</button>
+      <button id="btnRotateRight">⟳ Rotate 90° Right</button>
+    </div>
     <div class="row">
       <button id="btnOCRCrop">Run OCR on Crop</button>
       <button id="btnResetCrop">Reset Crop</button>
@@ -59,7 +63,6 @@
 
   <div id="result" class="result" style="display:none"></div>
 
-  <!-- Engine (local files in same folder) -->
   <script src="tesseract.min.js"></script>
   <script>
   /* =========================================================
@@ -72,7 +75,6 @@
   let imgBitmap = null;
   let crop = { x:0, y:0, w:0, h:0, active:false };
   let previewScale = 1; // preview→original scale
-
   function setErr(msg){ document.getElementById('err').textContent = msg || ""; }
 
   /* =========================================================
@@ -237,7 +239,7 @@
   });
 
   /* =========================================================
-     OCR helpers (rotation + preprocessing)
+     Rotate helpers + buttons
      ========================================================= */
   function rotateCanvas(src, deg){
     if ((deg % 360) === 0) return src;
@@ -253,6 +255,24 @@
     return out;
   }
 
+  document.getElementById('btnRotateLeft').addEventListener('click', ()=>{
+    if (!imgBitmap) return;
+    imgBitmap = rotateCanvas(imgBitmap, -90);
+    crop = { x:0, y:0, w:0, h:0, active:false };
+    fitCanvas();
+    drawPreview();
+  });
+  document.getElementById('btnRotateRight').addEventListener('click', ()=>{
+    if (!imgBitmap) return;
+    imgBitmap = rotateCanvas(imgBitmap, 90);
+    crop = { x:0, y:0, w:0, h:0, active:false };
+    fitCanvas();
+    drawPreview();
+  });
+
+  /* =========================================================
+     OCR preprocessing + pipeline
+     ========================================================= */
   function preprocessWithThreshold(imgOrCanvas, scale=2, contrast=1.45, threshold=145){
     const getW = o => o.width || o.videoWidth || o.naturalWidth;
     const getH = o => o.height || o.videoHeight || o.naturalHeight;
