@@ -1,328 +1,372 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Pull # Lookup — OCR App</title>
-  <style>
-    :root { color-scheme: dark; }
-    html,body{margin:0;padding:0;background:#0d1117;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
-    .wrap{max-width:880px;margin:18px auto;padding:12px}
-    h1{font-size:28px;margin:8px 0 14px}
-    .card{border:1px solid #30363d;border-radius:12px;padding:14px 16px;margin:12px 0;background:#0f1319}
-    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
-    input[type=text]{flex:1;min-width:180px;background:#0d1117;border:1px solid #30363d;border-radius:8px;color:#e6edf3;padding:10px 12px;font-size:16px}
-    button{background:#1f6feb;border:0;color:#fff;border-radius:10px;padding:10px 14px;font-size:16px}
-    button:disabled{opacity:.6}
-    .hint{opacity:.8;font-size:14px;margin-top:6px}
-    .ok{color:#8ef59a;font-weight:600}
-    .err{color:#ff7b7b}
-    /* iOS file input fixes */
-    input[type=file]{max-width:100%;font-size:16px;accent-color:#1f6feb}
-    .fileRow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-    /* Canvas & crop box */
-    #stage{display:block;width:100%;max-width:100%;border:1px dashed #54627a;border-radius:10px;background:#0b0f14;margin:10px 0}
-    .cropBtnRow{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
-    details{margin-top:10px}
-    pre{white-space:pre-wrap;word-break:break-word;background:#0b0f14;border:1px solid #30363d;border-radius:8px;padding:10px}
-  </style>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Pull # Lookup — OCR App (Tuned)</title>
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<style>
+  :root { color-scheme: dark; }
+  body{margin:0;padding:16px;background:#0d1117;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,Helvetica,Arial,sans-serif}
+  h1{font-size:24px;margin:0 0 12px}
+  .card{border:1px solid #30363d;border-radius:12px;padding:14px;margin:12px auto;max-width:960px;background:#0d1117}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  input[type="text"]{flex:1;min-width:200px;padding:10px 12px;border-radius:10px;border:1px solid #30363d;background:#0b1320;color:#e6edf3;font-size:16px}
+  button{background:#2f6feb;border:none;color:#fff;border-radius:12px;padding:10px 14px;font-size:16px}
+  button:disabled{opacity:.5}
+  .ok{color:#7ee787;font-weight:600}
+  .err{color:#ff7b72}
+  .muted{color:#8b949e}
+  #previewWrap{position:relative;display:inline-block;max-width:100%}
+  #preview{display:block;border:1px dashed #3b3f46;border-radius:8px;max-width:100%}
+  /* selection rectangle */
+  #cropOverlay{position:absolute;left:0;top:0;right:0;bottom:0;pointer-events:none}
+  .rect{position:absolute;border:3px dashed #58a6ff;border-radius:6px;box-shadow:0 0 0 9999px rgba(0,0,0,.25);pointer-events:none}
+  details{margin-top:10px}
+  .result{border:1px solid #30363d;border-radius:10px;padding:12px;margin-top:10px}
+</style>
+<!-- Tesseract core library (global Tesseract) -->
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 </head>
 <body>
-<div class="wrap">
-  <h1>Pull # Lookup — OCR App</h1>
-
   <div class="card">
-    <div class="row">
-      <button id="btnInit" onclick="initOCR()">Init OCR</button>
-      <button onclick="loadSampleCSV()">Load sample CSV</button>
-      <div class="fileRow">
-        <input id="csvFile" type="file" accept=".csv" onchange="handleCSV(this.files[0])">
-      </div>
+    <h1>Pull # Lookup — OCR App</h1>
+    <div id="ocrState" class="muted">Tap “Init OCR” to load the engine.</div>
+    <div class="row" style="margin-top:8px">
+      <button id="btnInit">Init OCR</button>
+      <button id="btnLoadSampleCsv">Load sample CSV</button>
+      <label class="row" style="gap:10px;align-items:center;">
+        <input type="file" id="csvFile" accept=".csv" />
+      </label>
     </div>
-    <div id="status" class="hint">Tap “Init OCR” to load the engine.</div>
+    <div id="csvInfo" class="muted" style="margin-top:6px"></div>
+    <div id="initErr" class="err" style="margin-top:6px"></div>
   </div>
 
   <div class="card">
-    <h3>Step 2: Enter LDU or use OCR</h3>
+    <h2 style="margin:0 0 8px">Step 2: Enter LDU or use OCR</h2>
     <div class="row">
-      <input id="ldu" type="text" placeholder="LDU (last 3)">
-      <button onclick="doSearch()">Search</button>
+      <input id="lduInput" type="text" placeholder="LDU (last 3)" inputmode="latin-prose" maxlength="3" />
+      <button id="btnSearch">Search</button>
+    </div>
+
+    <div class="row" style="margin-top:8px">
+      <button id="btnCamera">Scan with Camera</button>
+      <button id="btnChoose">Choose Image</button>
+    </div>
+
+    <p class="muted" style="margin:10px 0 8px">
+      Tip: rotate to make the postal code horizontal, draw a crop box around it, then run OCR.
+    </p>
+
+    <div id="previewWrap">
+      <canvas id="preview"></canvas>
+      <div id="cropOverlay"><div id="cropRect" class="rect" style="display:none"></div></div>
+    </div>
+
+    <div class="row" style="margin-top:10px">
+      <button id="btnRotateL">↺ Rotate 90° Left</button>
+      <button id="btnRotateR">↻ Rotate 90° Right</button>
     </div>
     <div class="row" style="margin-top:8px">
-      <button onclick="openCamera()">Scan with Camera</button>
-      <button onclick="openPicker()">Choose Image</button>
-    </div>
-    <div class="hint">Tip: rotate to make the postal code horizontal, draw a crop box around it, then run OCR.</div>
-
-    <canvas id="stage" width="10" height="10"></canvas>
-
-    <div class="cropBtnRow">
-      <button onclick="rotate(-90)">⟳ Rotate 90° Left</button>
-      <button onclick="rotate(90)">⟲ Rotate 90° Right</button>
-    </div>
-    <div class="cropBtnRow" style="margin-top:6px">
-      <button onclick="runOCRonCrop()">Run OCR on Crop</button>
-      <button onclick="resetCrop()">Reset Crop</button>
+      <button id="btnOcr">Run OCR on Crop</button>
+      <button id="btnResetCrop">Reset Crop</button>
     </div>
 
-    <div id="ocrMsg" class="hint"></div>
-    <div id="resultBox" class="card" style="display:none;margin-top:12px"></div>
+    <div id="ocrMsg" class="muted" style="margin-top:8px"></div>
+    <div id="searchResult" class="result" style="display:none"></div>
 
     <details>
       <summary>Debug</summary>
-      <pre id="debug"></pre>
+      <pre id="debug" style="white-space:pre-wrap"></pre>
     </details>
   </div>
-</div>
-
-<!-- Tesseract (CDN) -->
-<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.0.5/dist/tesseract.min.js"></script>
 
 <script>
-/* ======= globals ======= */
-let worker=null, data=[], img=new Image(), imgCanvas=null, imgCtx=null;
-let viewScale=1;                 // stage pixels per image pixel
-let crop={x:0,y:0,w:0,h:0, dragging:false, startX:0, startY:0};
-const stage=document.getElementById('stage'); const ctx=stage.getContext('2d');
-const ocrMsg = id('ocrMsg'), statusEl=id('status'), debug=id('debug');
+/* ========= Globals ========= */
+let worker = null;                // Tesseract worker
+let data = [];                    // CSV rows
+let imgOrig = null;               // HTMLImageElement of original image
+let previewScale = 1;             // scale from original -> preview canvas
+let rotation = 0;                 // 0, 90, 180, 270 (degrees)
+const preview = document.getElementById('preview');
+const ctx = preview.getContext('2d', { willReadFrequently: true });
+const cropRectEl = document.getElementById('cropRect');
+const debugEl = document.getElementById('debug');
 
-/* ======= helpers ======= */
-function id(x){return document.getElementById(x)}
-function setStatus(msg, ok=false, err=false){
-  statusEl.innerHTML = ok ? `<span class="ok">${msg}</span>` :
-                    err ? `<span class="err">${msg}</span>` : msg;
+/* ========= Utils ========= */
+function log(msg){ debugEl.textContent += msg + "\n"; }
+function show(msg, id){ const el=document.getElementById(id); if(el) el.textContent=msg; }
+function regexPostal(text){
+  // Robust Canadian postal code (no D F I O Q U) and tolerate spaces/newlines
+  const re = /([ABCEGHJKLMNPRSTVXY]\s*\d\s*[ABCEGHJKLMNPRSTVWXYZ])\s*(\d\s*[ABCEGHJKLMNPRSTVWXYZ]\s*\d)/gi;
+  return re.exec(text);
 }
-function log(s){ debug.textContent = (debug.textContent?debug.textContent+"\n":"")+s }
-
-/* ======= CSV ======= */
-function loadSampleCSV(){
-  data=[{Depot:"Whiterock",Route:"LC0008",Street:"16 Ave",Range:"1500–1598",LDU:"1C2",Pull:"7"}];
-  setStatus("Sample loaded (1 row). Try LDU 1C2.",true);
-}
-function handleCSV(file){
-  if(!file){return}
-  const r=new FileReader();
-  r.onload=e=>{
-    const lines=e.target.result.split(/\r?\n/);
-    const head=lines.shift().split(",");
-    const idx = k=>head.indexOf(k);
-    data = lines.filter(Boolean).map(row=>{
-      const c=row.split(",");
-      return {
-        Depot: c[idx("Depot")],
-        Route: c[idx("Route")],
-        Street:c[idx("Street")],
-        Range: c[idx("Address Range")],
-        LDU:   (c[idx("LDU")]||"").trim().toUpperCase(),
-        Pull:  c[idx("Pull #")]
-      };
-    }).filter(x=>x.Depot&&x.LDU&&x.Pull);
-    setStatus(`CSV loaded (${data.length} rows).`,true);
-  };
-  r.readAsText(file);
+function toLDU(fullPC){
+  return fullPC.replace(/\s/g,'').slice(-3).toUpperCase();
 }
 
-/* ======= search ======= */
-function doSearch(){
-  const v=id('ldu').value.trim().toUpperCase();
-  const hit=data.find(r=>r.LDU===v);
-  const box=id('resultBox');
-  if(hit){
-    box.style.display="block";
-    box.innerHTML=`<div><strong>${hit.Route}</strong> • ${hit.Street} ${hit.Range||""}</div>
-                   <div>LDU <strong>${hit.LDU}</strong></div>
-                   <div style="margin-top:6px;font-size:20px">Pull # <strong>${hit.Pull}</strong></div>`;
-  }else{
-    box.style.display="block";
-    box.textContent="No match.";
-  }
-}
-
-/* ======= image I/O ======= */
-function openPicker(){
-  const inp=document.createElement('input');
-  inp.type='file'; inp.accept='image/*';
-  inp.onchange=e=>{ if(e.target.files[0]) loadImage(e.target.files[0]) };
-  inp.click();
-}
-function openCamera(){
-  const inp=document.createElement('input');
-  inp.type='file'; inp.accept='image/*'; inp.capture='environment';
-  inp.onchange=e=>{ if(e.target.files[0]) loadImage(e.target.files[0]) };
-  inp.click();
-}
-
-function loadImage(file){
-  const url=URL.createObjectURL(file);
-  img.onload=()=>{ fitCanvas(); draw(); URL.revokeObjectURL(url); };
-  img.src=url;
-}
-
-/* ======= canvas, crop & rotate ======= */
-function fitCanvas(){
-  const maxW = Math.min(860, window.innerWidth-40);
-  const maxH = Math.min(900, window.innerHeight-200);
-  let w = img.width, h = img.height;
-  const s = Math.min(maxW/w, maxH/h, 1);
-  stage.width = Math.round(w*s);
-  stage.height= Math.round(h*s);
-  viewScale = s;
-
-  // backing canvas in full resolution
-  imgCanvas = document.createElement('canvas');
-  imgCanvas.width = img.width; imgCanvas.height = img.height;
-  imgCtx = imgCanvas.getContext('2d',{willReadFrequently:true});
-  imgCtx.drawImage(img,0,0);
-
-  // default crop: center 30% area
-  crop.w = Math.round(stage.width * 0.5);
-  crop.h = Math.round(stage.height* 0.22);
-  crop.x = Math.round((stage.width - crop.w)/2);
-  crop.y = Math.round((stage.height- crop.h)/2);
-}
-function draw(){
-  ctx.clearRect(0,0,stage.width,stage.height);
-  ctx.drawImage(img,0,0,stage.width,stage.height);
-  // crop rect
-  ctx.save();
-  ctx.strokeStyle="#6ea8fe"; ctx.setLineDash([6,6]); ctx.lineWidth=2;
-  ctx.strokeRect(crop.x,crop.y,crop.w,crop.h);
-  ctx.restore();
-}
-function stageToImageRect(){
-  const inv = 1/viewScale;
-  return {
-    x: Math.round(crop.x * inv),
-    y: Math.round(crop.y * inv),
-    w: Math.round(crop.w * inv),
-    h: Math.round(crop.h * inv)
-  };
-}
-// drag crop (mouse & touch)
-stage.addEventListener('mousedown',e=>{ crop.dragging=true; crop.startX=e.offsetX; crop.startY=e.offsetY; });
-stage.addEventListener('mousemove',e=>{
-  if(!crop.dragging) return;
-  crop.w = Math.max(10, Math.min(stage.width - crop.x, e.offsetX - crop.x));
-  crop.h = Math.max(10, Math.min(stage.height- crop.y, e.offsetY - crop.y));
-  draw();
-});
-window.addEventListener('mouseup',()=>{ crop.dragging=false; });
-stage.addEventListener('touchstart',e=>{
-  const r=stage.getBoundingClientRect(), t=e.touches[0];
-  crop.dragging=true; crop.startX=t.clientX-r.left; crop.startY=t.clientY-r.top;
-});
-stage.addEventListener('touchmove',e=>{
-  if(!crop.dragging) return;
-  const r=stage.getBoundingClientRect(), t=e.touches[0];
-  const x=t.clientX-r.left, y=t.clientY-r.top;
-  crop.w = Math.max(10, Math.min(stage.width - crop.x, x - crop.x));
-  crop.h = Math.max(10, Math.min(stage.height- crop.y, y - crop.y));
-  draw();
-},{passive:true});
-window.addEventListener('touchend',()=>{ crop.dragging=false; });
-
-function resetCrop(){ fitCanvas(); draw(); }
-function rotate(deg){
-  if(!imgCanvas) return;
-  // rotate backing canvas
-  const rad = deg * Math.PI/180;
-  const w=imgCanvas.width, h=imgCanvas.height;
-  const rot = (deg%180===0)?{w,h}:{w:h, h:w};
-  const tmp = document.createElement('canvas'); tmp.width=rot.w; tmp.height=rot.h;
-  const tctx=tmp.getContext('2d');
-  tctx.translate(tmp.width/2, tmp.height/2);
-  tctx.rotate(rad);
-  tctx.drawImage(imgCanvas,-w/2,-h/2);
-  // swap in
-  imgCanvas = tmp; imgCtx = tctx;
-  // reflect to visible stage
-  img = new Image();
-  img.onload=()=>{ fitCanvas(); draw(); };
-  img.src = imgCanvas.toDataURL('image/png');
-}
-
-/* ======= OCR ======= */
+/* ========= OCR Init (safe for iPhone & GitHub Pages) ========= */
+document.getElementById('btnInit').addEventListener('click', initOCR);
 async function initOCR(){
   try{
-    setStatus("Loading Tesseract…");
-    worker = await Tesseract.createWorker("eng", 1, {
-      workerPath: "https://cdn.jsdelivr.net/npm/tesseract.js@5.0.5/dist/worker.min.js",
-      corePath: "https://cdn.jsdelivr.net/npm/tesseract.js-core@5.0.5",
-      logger:m=>{ if(m.status) log(`${m.status} ${(m.progress*100|0)}%`) }
-    });
-    setStatus("OCR ready ✅", true);
-  }catch(e){
-    setStatus("Init failed: "+e.message, false, true);
-    log("Init error: "+(e.stack||e));
-  }
-}
-
-async function runOCRonCrop(){
-  if(!worker){ setStatus("Init OCR first",false,true); return; }
-  if(!imgCanvas){ setStatus("Load or capture an image.",false,true); return; }
-  // 1) get high-res crop from backing canvas
-  const r = stageToImageRect();
-  const src = imgCtx.getImageData(r.x, r.y, r.w, r.h);
-  // 2) make working canvas
-  const work = document.createElement('canvas'), wctx = work.getContext('2d',{willReadFrequently:true});
-  work.width = src.width; work.height = src.height; wctx.putImageData(src,0,0);
-
-  // 3) pre-process (grayscale + CLAHE + sharpen-ish)
-  const idata = wctx.getImageData(0,0,work.width,work.height);
-  const d = idata.data;
-  for(let i=0;i<d.length;i+=4){
-    const g = (d[i]*0.299 + d[i+1]*0.587 + d[i+2]*0.114)|0;
-    d[i]=d[i+1]=d[i+2]=g;
-  }
-  // local contrast (cheap) + slight thresholding
-  let sum=0, cnt=0;
-  for(let y=0;y<work.height;y+=16){
-    for(let x=0;x<work.width;x+=16){
-      // compute block mean
-      sum=0; cnt=0;
-      for(let yy=y; yy<Math.min(y+16,work.height); yy++){
-        for(let xx=x; xx<Math.min(x+16,work.width); xx++){
-          const p=(yy*work.width+xx)*4; sum+=d[p]; cnt++;
-        }
-      }
-      const mean=sum/cnt, low=mean-15, high=mean+15;
-      for(let yy=y; yy<Math.min(y+16,work.height); yy++){
-        for(let xx=x; xx<Math.min(x+16,work.width); xx++){
-          const p=(yy*work.width+xx)*4;
-          let v=d[p];
-          v = (v<low)?0:(v>high)?255:((v-low)/(high-low)*255)|0;
-          d[p]=d[p+1]=d[p+2]=v;
-        }
-      }
+    document.getElementById('initErr').textContent = '';
+    if(!window.Tesseract){
+      document.getElementById('initErr').textContent = "Tesseract library not loaded — refresh the page.";
+      return;
     }
+    show("Loading OCR engine…", "ocrState");
+
+    worker = await Tesseract.createWorker("eng", 1, {
+      // Always pull from CDN; works on GitHub Pages and iOS
+      workerPath: "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js",
+      corePath:   "https://cdn.jsdelivr.net/npm/tesseract.js-core@5/dist/tesseract-core.wasm.js"
+    });
+
+    show("OCR ready ✅", "ocrState");
+  }catch(e){
+    show("Init failed: " + (e?.message || e), "initErr");
+    show("Error ❌","ocrState");
   }
-  wctx.putImageData(idata,0,0);
-
-  // 4) upscale small crops for OCR
-  const targetH = Math.max(80, work.height*1.6|0);
-  if(work.height < targetH){
-    const scale = targetH / work.height;
-    const up = document.createElement('canvas'); up.width=(work.width*scale)|0; up.height=targetH;
-    up.getContext('2d').imageSmoothingEnabled=false;
-    up.getContext('2d').drawImage(work,0,0,up.width,up.height);
-    work.width=up.width; work.height=up.height;
-    wctx.drawImage(up,0,0);
-  }
-
-  // 5) OCR
-  setStatus("Running OCR…");
-  const res = await worker.recognize(work, { tessedit_char_whitelist:"ABCEGHJKLMNPRSTVWXYZ0123456789" });
-  const text = (res.data && res.data.text ? res.data.text : "").toUpperCase();
-  log("RAW: "+text.replace(/\s+/g,' '));
-
-  // 6) parse
-  const m = text.match(/([ABCEGHJKLMNPRSTVXY]\s*\d\s*[ABCEGHJKLMNPRSTVWXYZ])\s*\d\s*[ABCEGHJKLMNPRSTVWXYZ]\s*\d/);
-  if(!m){ ocrMsg.innerHTML="<span class='err'>No postal code found.</span>"; return; }
-  const ldu = m[0].replace(/\s/g,"").slice(-3);
-  id('ldu').value = ldu;
-  ocrMsg.innerHTML = `OCR detected LDU: <strong>${ldu}</strong>`;
-  setStatus("OCR complete.",true);
 }
+
+/* ========= CSV handling ========= */
+document.getElementById('btnLoadSampleCsv').addEventListener('click', ()=>{
+  data = [{Depot:"Whiterock",Route:"LC0008",Street:"16 Ave",Range:"1500-1598",LDU:"1C2",Pull:"7"}];
+  show("Sample loaded (1 row). Try LDU 1C2.","csvInfo");
+});
+document.getElementById('csvFile').addEventListener('change', e=>{
+  const f=e.target.files[0]; if(!f) return;
+  const r=new FileReader();
+  r.onload=ev=>{
+    const lines = ev.target.result.split(/\r?\n/).filter(Boolean);
+    const headers = lines[0].split(",");
+    const idx = {
+      Depot: headers.indexOf("Depot"),
+      Route: headers.indexOf("Route"),
+      Street: headers.indexOf("Street"),
+      Range: headers.indexOf("Address Range"),
+      LDU:   headers.indexOf("LDU"),
+      Pull:  headers.indexOf("Pull #")
+    };
+    data = lines.slice(1).map(row=>{
+      const c=row.split(",");
+      return {
+        Depot: c[idx.Depot],
+        Route: c[idx.Route],
+        Street:c[idx.Street],
+        Range: c[idx.Range],
+        LDU:   (c[idx.LDU]||"").trim().toUpperCase(),
+        Pull:  c[idx.Pull]
+      };
+    }).filter(x=>x.Depot && x.LDU && x.Pull);
+    show(`CSV loaded (${data.length} rows)`, "csvInfo");
+  };
+  r.readAsText(f);
+});
+
+/* ========= Search by LDU ========= */
+document.getElementById('btnSearch').addEventListener('click', ()=>{
+  const ldu = document.getElementById('lduInput').value.trim().toUpperCase();
+  const hit = data.find(r=>r.LDU===ldu);
+  const box = document.getElementById('searchResult');
+  if(hit){
+    box.style.display = "block";
+    box.innerHTML = `${hit.Route} • ${hit.Street} ${hit.Range||''}<br>LDU ${hit.LDU}<br><strong>Pull # ${hit.Pull}</strong>`;
+  }else{
+    box.style.display = "block";
+    box.textContent = "No match.";
+  }
+});
+
+/* ========= Image load, rotate, scaling ========= */
+document.getElementById('btnChoose').addEventListener('click', ()=> pickImage(false));
+document.getElementById('btnCamera').addEventListener('click', ()=> pickImage(true));
+
+function pickImage(useCamera){
+  const inp = document.createElement('input');
+  inp.type='file'; inp.accept='image/*';
+  if(useCamera) inp.capture='environment';
+  inp.onchange = e => { if(e.target.files[0]) loadImageFile(e.target.files[0]); };
+  inp.click();
+}
+
+function fitCanvas(image){
+  // compute scale so the image fits nicely
+  const maxW = Math.min(960, window.innerWidth*0.92);
+  const maxH = Math.max(320, window.innerHeight*0.45);
+
+  // if rotated by 90/270, swap logical width/height for scaling
+  const r = (rotation % 180) ? { w:image.height, h:image.width } : { w:image.width, h:image.height };
+  let scale = Math.min(maxW / r.w, maxH / r.h);
+  if(scale > 1) scale = 1;
+
+  // canvas size is the displayed (rotated) size
+  preview.width  = Math.round(r.w * scale);
+  preview.height = Math.round(r.h * scale);
+
+  // draw with rotation
+  ctx.save();
+  ctx.clearRect(0,0,preview.width,preview.height);
+  if(rotation % 360 === 0){
+    ctx.drawImage(image, 0, 0, preview.width, preview.height);
+  }else{
+    ctx.translate(preview.width/2, preview.height/2);
+    ctx.rotate(rotation * Math.PI/180);
+    const dw = scale * image.width;
+    const dh = scale * image.height;
+    ctx.drawImage(image, -dw/2, -dh/2, dw, dh);
+  }
+  ctx.restore();
+
+  previewScale = scale;
+  resetCrop();
+}
+
+function loadImageFile(file){
+  const img=new Image();
+  img.onload = ()=>{ imgOrig = img; rotation = 0; fitCanvas(imgOrig); };
+  img.src = URL.createObjectURL(file);
+}
+
+document.getElementById('btnRotateL').addEventListener('click', ()=>{ if(imgOrig){ rotation = (rotation+270)%360; fitCanvas(imgOrig); }});
+document.getElementById('btnRotateR').addEventListener('click', ()=>{ if(imgOrig){ rotation = (rotation+90)%360;  fitCanvas(imgOrig); }});
+
+/* ========= Crop interaction (mouse + touch) ========= */
+let dragStart = null;  // in preview coords
+let cropRect = null;   // {x,y,w,h} in preview coords
+
+function resetCrop(){
+  cropRect = null;
+  cropRectEl.style.display='none';
+}
+
+function setRectEl(r){
+  cropRectEl.style.left = r.x+"px";
+  cropRectEl.style.top  = r.y+"px";
+  cropRectEl.style.width= r.w+"px";
+  cropRectEl.style.height=r.h+"px";
+  cropRectEl.style.display='block';
+}
+
+function pointerDown(px,py){
+  if(!preview.width) return;
+  const rect = preview.getBoundingClientRect();
+  const x = px - rect.left, y = py - rect.top;
+  dragStart = {x,y};
+  cropRect = {x,y,w:0,h:0};
+  setRectEl(cropRect);
+}
+function pointerMove(px,py){
+  if(!dragStart) return;
+  const rect = preview.getBoundingClientRect();
+  let x = px - rect.left, y = py - rect.top;
+  // clamp to canvas bounds
+  x = Math.max(0, Math.min(preview.width, x));
+  y = Math.max(0, Math.min(preview.height, y));
+  const x0 = Math.min(dragStart.x, x);
+  const y0 = Math.min(dragStart.y, y);
+  const w  = Math.abs(x - dragStart.x);
+  const h  = Math.abs(y - dragStart.y);
+  cropRect = {x:x0,y:y0,w,h};
+  setRectEl(cropRect);
+}
+function pointerUp(){ dragStart = null; }
+
+preview.addEventListener('mousedown', e=>{ pointerDown(e.clientX,e.clientY); });
+window.addEventListener('mousemove', e=>{ pointerMove(e.clientX,e.clientY); });
+window.addEventListener('mouseup', pointerUp);
+
+// touch
+preview.addEventListener('touchstart', e=>{ const t=e.changedTouches[0]; pointerDown(t.clientX,t.clientY); }, {passive:true});
+window.addEventListener('touchmove', e=>{ const t=e.changedTouches[0]; pointerMove(t.clientX,t.clientY); }, {passive:true});
+window.addEventListener('touchend', pointerUp);
+
+/* ========= Run OCR on crop ========= */
+document.getElementById('btnOcr').addEventListener('click', runLduOCR);
+
+async function runLduOCR(){
+  try{
+    if(!worker){ show("Init OCR first.","ocrMsg"); return; }
+    if(!imgOrig){ show("Load or take a picture first.","ocrMsg"); return; }
+
+    // Build an offscreen canvas of the *original* crop (account for rotation & scale)
+    const off = document.createElement('canvas');
+    const offCtx = off.getContext('2d');
+    // If no crop drawn, take center band to increase success
+    let r = cropRect;
+    if(!r){
+      const pad = Math.round(preview.height*0.08);
+      r = { x: Math.round(preview.width*0.08), y: pad,
+            w: Math.round(preview.width*0.84), h: Math.round(preview.height*0.25) };
+    }
+
+    // Map preview rect -> original coordinates (before rotation)
+    const sx = r.x / previewScale;
+    const sy = r.y / previewScale;
+    const sw = r.w / previewScale;
+    const sh = r.h / previewScale;
+
+    // After rotation, the preview axes are swapped for 90/270. Map back.
+    let sx0, sy0, sw0, sh0, W = imgOrig.width, H = imgOrig.height;
+    if(rotation % 360 === 0){
+      sx0 = sx; sy0 = sy; sw0 = sw; sh0 = sh;
+    } else if(rotation % 360 === 90){
+      sx0 = sy;
+      sy0 = W - (sx + sw);
+      sw0 = sh; sh0 = sw;
+    } else if(rotation % 360 === 180){
+      sx0 = W - (sx + sw);
+      sy0 = H - (sy + sh);
+      sw0 = sw; sh0 = sh;
+    } else { // 270
+      sx0 = H - (sy + sh);
+      sy0 = sx;
+      sw0 = sh; sh0 = sw;
+    }
+
+    // Clamp to image bounds
+    sx0 = Math.max(0, Math.min(W-1, sx0));  sy0 = Math.max(0, Math.min(H-1, sy0));
+    sw0 = Math.max(1, Math.min(W - sx0, sw0)); sh0 = Math.max(1, Math.min(H - sy0, sh0));
+
+    // Preprocess: upscale, grayscale, light threshold
+    const scaleUp = Math.min(2.5, Math.max(1, 600 / Math.min(sw0, sh0)));
+    off.width  = Math.round(sw0 * scaleUp);
+    off.height = Math.round(sh0 * scaleUp);
+
+    // draw cropped region
+    offCtx.imageSmoothingEnabled = true;
+    offCtx.imageSmoothingQuality = 'high';
+    offCtx.drawImage(imgOrig, sx0, sy0, sw0, sh0, 0, 0, off.width, off.height);
+
+    // grayscale + adaptive threshold
+    const imgData = offCtx.getImageData(0,0,off.width,off.height);
+    const d = imgData.data;
+    for(let i=0;i<d.length;i+=4){
+      const g = (d[i]*0.299 + d[i+1]*0.587 + d[i+2]*0.114);
+      const v = g>160 ? 255 : (g<90 ? 0 : g); // gentle threshold
+      d[i]=d[i+1]=d[i+2]=v;
+    }
+    offCtx.putImageData(imgData,0,0);
+
+    // OCR
+    show("Running OCR…","ocrMsg");
+    const res = await worker.recognize(off);
+    const raw = (res?.data?.text || "").toUpperCase();
+    log("OCR raw:\n" + raw);
+
+    const m = regexPostal(raw);
+    if(!m){ show("No postal code found — try tighter crop / rotate level / better light.","ocrMsg"); return; }
+    const ldu = toLDU(m[0]);
+    document.getElementById('lduInput').value = ldu;
+    show("OCR detected LDU: " + ldu, "ocrMsg");
+  }catch(e){
+    show("OCR failed: " + (e?.message||e), "ocrMsg");
+  }
+}
+
+/* ========= Reset crop button ========= */
+document.getElementById('btnResetCrop').addEventListener('click', resetCrop);
 </script>
 </body>
 </html>
