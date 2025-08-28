@@ -107,6 +107,76 @@ function toLDU(fullPC){
 }
 
 /* ========= OCR Init (safe for iPhone & GitHub Pages) ========= */
+
+<script>
+/* ------- add this helper ABOVE initOCR() ------- */
+const CDN_CHOICES = [
+  {
+    name: "jsDelivr",
+    worker: "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js",
+    core:   "https://cdn.jsdelivr.net/npm/tesseract.js-core@5/dist/tesseract-core.wasm.js"
+  },
+  {
+    name: "unpkg",
+    worker: "https://unpkg.com/tesseract.js@5/dist/worker.min.js",
+    core:   "https://unpkg.com/tesseract.js-core@5/dist/tesseract-core.wasm.js"
+  },
+  {
+    name: "cdnjs",
+    worker: "https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.0.5/worker.min.js",
+    core:   "https://cdnjs.cloudflare.com/ajax/libs/tesseract.js-core/5.0.5/tesseract-core.wasm.js"
+  }
+];
+
+async function pickCdn() {
+  // Try each CDN with a quick HEAD probe; return the first that answers OK.
+  for (const c of CDN_CHOICES) {
+    try {
+      const [a,b] = await Promise.all([
+        fetch(c.worker, { method:"HEAD", mode:"cors", cache:"no-store" }),
+        fetch(c.core,   { method:"HEAD", mode:"cors", cache:"no-store" }),
+      ]);
+      if (a.ok && b.ok) return c;
+    } catch (_) { /* ignore and try next */ }
+  }
+  throw new Error("No CDN reachable for Tesseract (blocked by network/content filter).");
+}
+
+/* ------- REPLACE your initOCR() with this ------- */
+document.getElementById('btnInit').addEventListener('click', initOCR);
+async function initOCR(){
+  const state = id => document.getElementById(id);
+  try {
+    state('initErr').textContent = '';
+    if (!window.Tesseract) {
+      state('initErr').textContent = "Tesseract library not loaded — refresh the page.";
+      return;
+    }
+    state('ocrState').textContent = "Finding OCR CDN…";
+
+    const cdn = await pickCdn();       // <- choose a working CDN
+    state('ocrState').textContent = `Loading OCR engine from ${cdn.name}…`;
+
+    // Extra: warm the cache to avoid Safari “Load failed” on first importScripts
+    await Promise.all([
+      fetch(cdn.worker, {mode:'cors', cache:'reload'}).catch(()=>{}),
+      fetch(cdn.core,   {mode:'cors', cache:'reload'}).catch(()=>{})
+    ]);
+
+    // Create the worker using the chosen CDN
+    worker = await Tesseract.createWorker("eng", 1, {
+      workerPath: cdn.worker,
+      corePath:   cdn.core,
+    });
+
+    state('ocrState').innerHTML = "<span class='ok'>OCR ready ✅</span>";
+  } catch (e) {
+    state('ocrState').textContent = "Error ❌";
+    state('initErr').textContent = "Init failed: " + (e?.message || e);
+  }
+}
+</script>
+
 document.getElementById('btnInit').addEventListener('click', initOCR);
 async function initOCR(){
   try{
